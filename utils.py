@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 # We initialize the model using LangChain's wrapper
 # This makes it easy to swap 'gpt-4o' for 'claude' or 'llama' later
-model = ChatOpenAI(model="GPT-4o-mini", max_tokens=1024)
+model = ChatOpenAI(model="gpt-4o-mini", max_tokens=1024)
 
 def get_recipes_from_image(image_bytes: bytes) -> str:
     # Encode image as before
