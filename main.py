@@ -1,6 +1,6 @@
 # main.py
 import streamlit as st
-from utils import get_recipes_from_image
+from utils import get_ingredients_from_image, get_recipes_from_ingredients
 
 st.set_page_config(page_title="AI Recipe Generator", page_icon="🍳")
 
@@ -16,21 +16,32 @@ if input_method == "Camera":
 else:
     img_file = st.file_uploader("Upload an image of your ingredients", type=["jpg", "jpeg", "png"])
 
-# If an image is captured or uploaded
 if img_file is not None:
-    # Display the image back to the user
     st.image(img_file, caption="Your ingredients", use_container_width=True)
-    
-    # Generate button
-    if st.button("Generate Recipes", type="primary"):
-        with st.spinner("Chef GPT-4o is analyzing your ingredients..."):
-            
-            # Extract raw bytes from the Streamlit UploadedFile object
+
+    # Step 1: detect ingredients
+    if st.button("Detect Ingredients", type="primary"):
+        with st.spinner("Identifying ingredients..."):
             image_bytes = img_file.getvalue()
-            
-            # Call our utility function
-            recipe_text = get_recipes_from_image(image_bytes)
-            
-            # Display the results
-            st.success("Recipes generated!")
-            st.markdown(recipe_text)
+            detected = get_ingredients_from_image(image_bytes)
+            st.session_state["detected_ingredients"] = detected
+            st.session_state["recipes"] = None
+
+# Step 2: let user review and edit the ingredient list
+if st.session_state.get("detected_ingredients"):
+    st.subheader("Detected ingredients")
+    st.write("Edit the list below if anything is missing or wrong, then generate recipes.")
+    edited = st.text_area(
+        "Ingredients (comma-separated)",
+        value=st.session_state["detected_ingredients"],
+        key="ingredients_input",
+    )
+
+    if st.button("Generate Recipes", type="primary"):
+        with st.spinner("Chef GPT-4o is cooking up recipes..."):
+            st.session_state["recipes"] = get_recipes_from_ingredients(edited)
+
+# Step 3: show recipes
+if st.session_state.get("recipes"):
+    st.success("Recipes generated!")
+    st.markdown(st.session_state["recipes"])
