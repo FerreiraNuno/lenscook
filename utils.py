@@ -39,15 +39,32 @@ def get_ingredients_from_image(image_bytes: bytes) -> str:
         return f"Error: {e}"
 
 
-def get_recipes_from_ingredients(ingredients: str) -> str:
+def get_recipe_titles(ingredients: str) -> list[str]:
+    """Return a list of 3 recipe name suggestions for the given ingredients."""
     message = HumanMessage(
         content=(
             f"I have these ingredients: {ingredients}\n\n"
-            "Suggest 3 recipes I can make. For each recipe provide:\n"
-            "- A recipe name as a heading\n"
+            "Suggest 3 recipe names I could make. "
+            "Reply with only the 3 names, one per line, no numbering or extra text."
+        )
+    )
+    try:
+        response = model.invoke([message])
+        titles = [t.strip() for t in response.content.strip().splitlines() if t.strip()]
+        return titles[:3]
+    except Exception as e:
+        return [f"Error: {e}"]
+
+
+def get_recipe_detail(recipe_name: str, ingredients: str) -> str:
+    """Return full step-by-step instructions for a single recipe."""
+    message = HumanMessage(
+        content=(
+            f"I want to make '{recipe_name}' using some of these ingredients: {ingredients}\n\n"
+            "Provide the full recipe with:\n"
             "- A one-sentence description\n"
-            "- The full ingredient list with quantities\n"
-            "- Numbered step-by-step cooking instructions\n"
+            "- Ingredient list with quantities\n"
+            "- Numbered step-by-step cooking instructions"
         )
     )
     try:
