@@ -3,3 +3,6 @@
 .venv
 __pycache__/
 Kühlschrank.jpg
+.python-version
+pyproject.toml
+uv.lock
