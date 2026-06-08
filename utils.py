@@ -7,9 +7,49 @@ from dotenv import load_dotenv
 load_dotenv()
 # We initialize the model using LangChain's wrapper
 # This makes it easy to swap 'gpt-4o' for 'claude' or 'llama' later
-model = ChatOpenAI(model="gpt-4o-mini", max_tokens=1024)
+llm = ChatOpenAI(model="gpt-4o-mini", max_tokens=1024)
+embeddings = OpenAIEmbeddings()
 
+# --- Pinecone Setup ---
+pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+INDEX_NAME = "recipe-index"
 
+#Indexing
+def build_vectorstore(pdf_bytes: bytes) -> str:
+    reader = pypdf.PdfReader(io.Bytes(pdf_bytes))
+    full_text = ""
+    for page in reader.pages:
+        full_text += page.extract_text() or ""
+        
+    #Chunking
+    splitter = RecursiveCharacterTextSplitter(chunk_size = 1000, chunk_overlap = 20)
+    docs = splitter.create_documents([full_text])
+    print(f"Chunks erzeuht: {len(docs)}")
+    
+    #Pinecone Index neu erstellen
+    dimensions = len(embeddings.embed_query("test"))
+    if pc.has_index(INDEX_NAME):
+        pc.delete_index(INDEX_NAME)
+    pc.create_index(
+        name = INDEX_NAME
+        dimension = dimensions,
+        metric = "cosine",
+        spec = ServerlessSpec(cloud = "aws", region = "us-east-1"),
+    )
+    
+    #Chunks in Pinecone laden
+    
+    vectorstore = PineconeVectorStore(index_name = INDEX_NAME, embedding = embeddings)
+    vectorstore.add_documents(docs)
+    return vectorstore
+
+#retriever
+def get_retriever(vectorstore: PineconeVectorStore):
+    return vectorstore.as_retriever(search_kwargs={"k":5})
+
+def format_docs(docs):
+    return "\n\n".join(d.page_content for d in docs)
+    
 def _encode_image(image_bytes: bytes) -> str:
     return base64.b64encode(image_bytes).decode("utf-8")
 
