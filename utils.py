@@ -1,13 +1,25 @@
 # utils.py (LangChain Version)
 import base64
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+import io
+import os
+
+import pypdf
 from dotenv import load_dotenv
+from pinecone import Pinecone, ServerlessSpec
+
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_pinecone import PineconeVectorStore
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.messages import HumanMessage
 
 load_dotenv()
 # We initialize the model using LangChain's wrapper
 # This makes it easy to swap 'gpt-4o' for 'claude' or 'llama' later
-llm = ChatOpenAI(model="gpt-4o-mini", max_tokens=1024)
+model = ChatOpenAI(model="gpt-4o-mini", max_tokens=1024)
 embeddings = OpenAIEmbeddings()
 
 # --- Pinecone Setup ---
@@ -15,8 +27,8 @@ pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
 INDEX_NAME = "recipe-index"
 
 #Indexing
-def build_vectorstore(pdf_bytes: bytes) -> str:
-    reader = pypdf.PdfReader(io.Bytes(pdf_bytes))
+def build_vectorstore(pdf_bytes: bytes) -> PineconeVectorStore:
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     full_text = ""
     for page in reader.pages:
         full_text += page.extract_text() or ""
@@ -31,7 +43,7 @@ def build_vectorstore(pdf_bytes: bytes) -> str:
     if pc.has_index(INDEX_NAME):
         pc.delete_index(INDEX_NAME)
     pc.create_index(
-        name = INDEX_NAME
+        name = INDEX_NAME,
         dimension = dimensions,
         metric = "cosine",
         spec = ServerlessSpec(cloud = "aws", region = "us-east-1"),
@@ -52,6 +64,8 @@ def format_docs(docs):
     
 def _encode_image(image_bytes: bytes) -> str:
     return base64.b64encode(image_bytes).decode("utf-8")
+
+
 
 
 def get_ingredients_from_image(image_bytes: bytes) -> str:
@@ -79,36 +93,85 @@ def get_ingredients_from_image(image_bytes: bytes) -> str:
         return f"Error: {e}"
 
 
-def get_recipe_titles(ingredients: str) -> list[str]:
+def get_recipe_titles(ingredients: str, vectorstore = None) -> list[str]:
     """Return a list of 3 recipe name suggestions for the given ingredients."""
-    message = HumanMessage(
-        content=(
-            f"I have these ingredients: {ingredients}\n\n"
-            "Suggest 3 recipe names I could make. "
-            "Reply with only the 3 names, one per line, no numbering or extra text."
+    if vectorstore:
+        retriever = get_retriever(vectorstore)
+        
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "Du bist ein Kochassistent. Schlage 3 Rezeptnamen vor, "
+             "die zu den Zutaten passen. Bevorzuge Rezepte aus dem folgenden Kontext.\n\n"
+             "Kontext:\n{context}"),
+            ("human",
+             "Ich habe folgende Zutaten: {input}\n\n"
+             "Antworte NUR mit 3 Rezeptnamen, einen pro Zeile, ohne Nummerierung.")
+        ]) 
+        chain = (
+            {
+                "context": retriever | format_docs,
+                "input" : RunnablePassthrough(),
+            }
+            | prompt
+            | model
+            | StrOutputParser()
         )
-    )
-    try:
-        response = model.invoke([message])
-        titles = [t.strip() for t in response.content.strip().splitlines() if t.strip()]
-        return titles[:3]
-    except Exception as e:
-        return [f"Error: {e}"]
+        response = chain.invoke(ingredients)
+    else:
+        prompt = ChatPromptTemplate.from_messages([
+            ("human",
+             "Ich habe folgende Zutaten: {input}\n\n"
+             "Schlage 3 Rezeptnamen vor. "
+             "Antworte NUR mit 3 Namen, einen pro Zeile, ohne Nummerierung.")
+        ])
+        chain = prompt | model | StrOutputParser()
+        response = chain.invoke({"input": ingredients})
+        
+    titles = [t.strip() for t in response.strip().splitlines() if t.strip()]
+    return titles[:3]
 
 
-def get_recipe_detail(recipe_name: str, ingredients: str) -> str:
+def get_recipe_detail(recipe_name: str, ingredients: str, vectorstore: PineconeVectorStore) -> str:
     """Return full step-by-step instructions for a single recipe."""
-    message = HumanMessage(
-        content=(
-            f"I want to make '{recipe_name}' using some of these ingredients: {ingredients}\n\n"
-            "Provide the full recipe with:\n"
-            "- A one-sentence description\n"
-            "- Ingredient list with quantities\n"
-            "- Numbered step-by-step cooking instructions"
+    if vectorstore:
+        retriever = get_retriever(vectorstore)
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+             "Du bist ein Kochassistent. Nutze den folgenden Kontext aus einem Kochbuch "
+             "um das Rezept zu erstellen. Falls das Rezept im Kontext vorkommt, "
+             "verwende genau diese Version.\n\n"
+             "Kontext:\n{context}"),
+            ("human",
+             "Ich möchte '{recipe_name}' kochen mit diesen Zutaten: {ingredients}\n\n"
+             "Gib das vollständige Rezept mit:\n"
+             "- Kurzbeschreibung (1 Satz)\n"
+             "- Zutatenliste mit Mengen\n"
+             "- Nummerierte Schritt-für-Schritt Anleitung")
+        ])
+        
+        chain = (
+            {
+                "context": RunnableLambda(lambda x: x["recipe_name"]) | retriever | format_docs,
+                "recipe_name": lambda x : x["recipe_name"],
+                "ingredients": lambda x : x["ingredients"],
+            }
+            | prompt
+            | model
+            | StrOutputParser()
         )
-    )
-    try:
-        response = model.invoke([message])
-        return response.content
-    except Exception as e:
-        return f"Error: {e}"
+        
+        return chain.invoke({"recipe_name": recipe_name, "ingredients": ingredients})
+    else:
+        prompt = ChatPromptTemplate.from_messages([
+            ("human",
+             "Ich möchte '{recipe_name}' kochen mit diesen Zutaten: {ingredients}\n\n"
+             "Gib das vollständige Rezept mit:\n"
+             "- Kurzbeschreibung (1 Satz)\n"
+             "- Zutatenliste mit Mengen\n"
+             "- Nummerierte Schritt-für-Schritt Anleitung")
+        ])
+        chain = prompt | model | StrOutputParser()
+        return chain.invoke({"recipe_name": recipe_name, "ingredients": ingredients})
+    
+    
