@@ -61,11 +61,16 @@ if st.session_state.get("detected_ingredients"):
     )
 
     if st.button("Generate Recipes", type="primary"):
+        vectorstore = st.session_state.get("vectorstore")
         with st.spinner("Finding recipe ideas..."):
-            vectorstore = st.session_state.get("vectorstore")
-            st.session_state["recipe_titles"] = get_recipe_titles(edited, vectorstore)
-            st.session_state["recipe_details"] = {}
+            titles = get_recipe_titles(edited, vectorstore)
+            st.session_state["recipe_titles"] = titles
             st.session_state["confirmed_ingredients"] = edited
+        details = {}
+        for i, title in enumerate(titles):
+            with st.spinner(f"Loading recipe {i + 1} of {len(titles)}..."):
+                details[f"detail_{title}"] = get_recipe_detail(title, edited, vectorstore)
+        st.session_state["recipe_details"] = details
 
 # Step 3: show recipe titles with expandable full details
 titles = st.session_state.get("recipe_titles")
@@ -73,16 +78,8 @@ if titles:
     has_book = "vectorstore" in st.session_state
     st.success("Hier sind 3 Rezepte aus deinem Kochbuch!" if has_book
         else "Hier sind 3 Rezepte die du machen kannst!")
-    confirmed_ingredients = st.session_state.get("confirmed_ingredients", "")
-    vectorstore = st.session_state.get("vectorstore")
     for title in titles:
         with st.expander(f"**{title}**  —  click to see full recipe"):
-            detail_key = f"detail_{title}"
-            if detail_key not in st.session_state["recipe_details"]:
-                if st.button(f"Load full recipe for '{title}'", key=f"btn_{title}"):
-                    with st.spinner("Fetching full recipe..."):
-                        detail = get_recipe_detail(title, confirmed_ingredients, vectorstore)
-                        st.session_state["recipe_details"][detail_key] = detail
-                        st.rerun()
-            else:
-                st.markdown(st.session_state["recipe_details"][detail_key])
+            detail = st.session_state.get("recipe_details", {}).get(f"detail_{title}")
+            if detail:
+                st.markdown(detail)
